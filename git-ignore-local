@@ -1,0 +1,128 @@
+#!/bin/bash
+
+set -Eeuo pipefail
+
+DEFAULT_BACKUP_DIR="$(git rev-parse --git-common-dir)/_ignore-local"
+BACKUP_DIR="${GIT_IGNORE_LOCAL_DIR:-$DEFAULT_BACKUP_DIR}"
+
+usage() {
+    cat <<EOF
+Usage: git-ignore-local <command> [args]
+
+Commands:
+    add <file>          Add a file to the local ignore list
+    forget <file>       Remove a file from the local ignore list
+    ls                  List files in the local ignore list
+    filter-clean        Filter for staging (used in gitconfig)
+    filter-smudge       Filter for checkout (used in gitconfig)
+    help                Show this help message
+
+Environment variables:
+    GIT_IGNORE_LOCAL_DIR    Directory for storing backup files
+                           (default: $(git rev-parse --git-common-dir)/_ignore-local)
+EOF
+}
+
+filter_clean() {
+    local prefix="$BACKUP_DIR/$1"
+
+    if [[ ! -e "${prefix}.me" ]] || [[ ! -e "${prefix}.orig" ]] ; then
+        cat
+        exit 0
+    fi
+
+    cat > "${prefix}.tmp"
+
+    git merge-file -p -L local -L ignored -L original "${prefix}".{tmp,me,orig} || [[ $? -ge 0 ]]
+}
+
+filter_smudge() {
+    local prefix="$BACKUP_DIR/$1"
+
+    if [[ ! -e "${prefix}.me" ]] || [[ ! -e "${prefix}.orig" ]] ; then
+        cat
+        exit 0
+    fi
+
+    cat > "${prefix}.tmp"
+
+    git merge-file -p -L ignored -L original -L local "${prefix}".{me,orig,tmp} || [[ $? -ge 0 ]]
+}
+
+add_file() {
+    local file="$1"
+    set -x
+
+    mkdir -p "$(dirname "$BACKUP_DIR/$file")"
+
+    # write original file from index
+    git cat-file -p ":$file" > "$BACKUP_DIR/$file.orig"
+
+    # write local file
+    cp -f "$file" "$BACKUP_DIR/$file.me"
+}
+
+forget_file() {
+    local file="$1"
+    set -x
+
+    rm -f "$BACKUP_DIR/$file".{orig,me,tmp}
+}
+
+list_files() {
+    if [ ! -d "$BACKUP_DIR" ]; then
+        return 0
+    fi
+
+    find "$BACKUP_DIR" -type f \
+        | sed -e "s|^$BACKUP_DIR/||g" -e 's/\(\.orig\|\.me\|\.tmp\)$//' \
+        | uniq
+}
+
+main() {
+    if [ $# -eq 0 ]; then
+        usage
+        exit 1
+    fi
+
+    local command="$1"
+    shift
+
+    case "$command" in
+        add)
+            if [ $# -ne 1 ]; then
+                echo "Error: 'add' requires exactly one file argument" >&2
+                exit 1
+            fi
+            add_file "$1"
+            ;;
+        forget)
+            if [ $# -ne 1 ]; then
+                echo "Error: 'forget' requires exactly one file argument" >&2
+                exit 1
+            fi
+            forget_file "$1"
+            ;;
+        ls)
+            list_files
+            ;;
+        filter-clean)
+            # specify '%f' in git config
+            filter_clean "$@"
+            ;;
+        filter-smudge)
+            # specify '%f' in git config
+            filter_smudge "$@"
+            ;;
+        help|-h|--help)
+            usage
+            ;;
+        *)
+            echo "Error: Unknown command '$command'" >&2
+            usage
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
