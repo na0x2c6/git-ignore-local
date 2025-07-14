@@ -95,10 +95,9 @@ See [gitattributes documentation](https://git-scm.com/docs/gitattributes#_filter
 ## Limitations and Risks
 
 1. **Merge conflicts**: The 3-way merge may produce conflict markers that need manual resolution
-2. **Backup directory**: The `_ignore-local` directory contains your local changes and should be added to `.gitignore`
-3. **Not for team use**: This is intended for individual developer use only
-4. **Performance**: Each file operation involves multiple merge operations
-5. **Complexity**: Adds a layer of complexity that can make debugging difficult
+2. **Not for team use**: This is intended for individual developer use only
+3. **Performance**: Each file operation involves multiple merge operations
+4. **Complexity**: Adds a layer of complexity that can make debugging difficult
 
 ## Troubleshooting
 
