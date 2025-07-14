@@ -13,6 +13,8 @@ Commands:
     add <file>          Add a file to the local ignore list
     forget <file>       Remove a file from the local ignore list
     ls                  List files in the local ignore list
+    diff [<opt>] [--] [<local-ignored files>...]
+                        Show diff between original and worktree files
     filter-clean        Filter for staging (used in gitconfig)
     filter-smudge       Filter for checkout (used in gitconfig)
     help                Show this help message
@@ -79,6 +81,44 @@ list_files() {
         | uniq
 }
 
+diff_files() {
+    if [ ! -d "$BACKUP_DIR" ]; then
+        return 0
+    fi
+
+    local diff_flags=()
+    local files=()
+    while [[ $# -gt 0 ]] ; do
+        case "$1" in
+            --)
+                shift
+                files+=("$@")
+                break;
+                ;;
+            -*)
+                diff_flags+=("$1")
+                shift
+                ;;
+            *)
+                files+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    if [[ ${#files[@]} -eq 0 ]] ; then
+        read -r -a files <<< "$(list_files)"
+    fi
+
+    for f in ${files[@]} ; do
+        local orig="${BACKUP_DIR}/${f}.orig"
+        if [[ ! -e $orig ]] ; then
+            continue
+        fi
+        git diff --no-index "${diff_flags[@]}" -- "$orig" "$f"
+    done
+}
+
 main() {
     if [ $# -eq 0 ]; then
         usage
@@ -105,6 +145,9 @@ main() {
             ;;
         ls)
             list_files
+            ;;
+        diff)
+            diff_files "$@"
             ;;
         filter-clean)
             # specify '%f' in git config

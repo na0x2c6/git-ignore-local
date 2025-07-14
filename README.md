@@ -16,18 +16,21 @@ This script uses Git's filter mechanism with 3-way merge to:
 ## Installation
 
 1. Make the script executable and add it to your PATH:
+
 ```bash
 chmod +x git-ignore-local
 # Add to PATH, e.g., copy to /usr/local/bin/ or add script directory to PATH
 ```
 
 2. Configure Git filters:
+
 ```bash
 git config filter.ignore-diff.clean "git-ignore-local filter-clean '%f'"
 git config filter.ignore-diff.smudge "git-ignore-local filter-smudge '%f'"
 ```
 
 3. Add files to `.gitattributes`:
+
 ```
 /path/to/file.txt filter=ignore-diff
 ```
@@ -35,22 +38,33 @@ git config filter.ignore-diff.smudge "git-ignore-local filter-smudge '%f'"
 ## Usage
 
 ### Add a file to local ignore
+
 ```bash
 git ignore-local add path/to/file.txt
 ```
+
 This creates backup copies of both the original (from Git index) and your local version.
 
 ### Remove a file from local ignore
+
 ```bash
 git ignore-local forget path/to/file.txt
 ```
 
 ### List all locally ignored files
+
 ```bash
 git ignore-local ls
 ```
 
+### Show diff between original and worktree files
+
+```bash
+git ignore-local diff
+```
+
 ### Show help
+
 ```bash
 git ignore-local help
 ```
@@ -69,6 +83,7 @@ See [gitattributes documentation](https://git-scm.com/docs/gitattributes#_filter
 ## ⚠️ Critical Warning
 
 **This script intentionally includes conflict markers in its output.** When staging or committing files managed by this script, always verify that no conflict markers are present in the file content. Look for patterns like:
+
 ```
 <<<<<<< local
 =======
