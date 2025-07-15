@@ -25,6 +25,10 @@ Environment variables:
 EOF
 }
 
+_print() {
+    echo "$@" >&2
+}
+
 filter_clean() {
     local prefix="$BACKUP_DIR/$1"
 
@@ -35,7 +39,14 @@ filter_clean() {
 
     cat > "${prefix}.tmp"
 
-    git merge-file -p -L local -L ignored -L original "${prefix}".{tmp,me,orig} || [[ $? -ge 0 ]]
+    set +Ee
+    git merge-file -p -L local -L ignored -L original "${prefix}".{tmp,me,orig}
+    local status="$?"
+    set -Ee
+
+    if [[ $status -gt 0 ]] ; then
+        _print "WARN: Conflicts found in local-ignored files and worktree - manual resolution required"
+    fi
 }
 
 filter_smudge() {
@@ -48,7 +59,15 @@ filter_smudge() {
 
     cat > "${prefix}.tmp"
 
-    git merge-file -p -L ignored -L original -L local "${prefix}".{me,orig,tmp} || [[ $? -ge 0 ]]
+
+    set +Ee
+    git merge-file -p -L ignored -L original -L local "${prefix}".{me,orig,tmp}
+    local status="$?"
+    set -Ee
+
+    if [[ $status -gt 0 ]] ; then
+        _print "WARN: local-ignored files conflict with worktree changes; the smudge filter generated conflicting content - manual resolution required"
+    fi
 }
 
 add_file() {
