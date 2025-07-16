@@ -10,11 +10,10 @@ usage() {
 Usage: git-ignore-local <command> [args]
 
 Commands:
-    push           Capture current state to ignore
-    reset       Delete captured state to ignore
+    push                Capture current state to ignore
+    reset               Delete captured state to ignore
     ls                  List files in the local ignore list
-    diff [<opt>] [--] [<local-ignored files>...]
-                        Show diff between original and worktree files
+    show                Show local-ignored entry
     filter-clean        Filter for staging (used in gitconfig)
     filter-smudge       Filter for checkout (used in gitconfig)
     help                Show this help message
@@ -30,12 +29,15 @@ _print() {
 }
 
 filter_clean() {
-    if ! git show-ref --verify -q "$REF" ; then
+    local path="$1"
+
+    if ! git rev-parse --verify -q "${REF}"         > /dev/null || \
+       ! git rev-parse --verify -q "${REF}:$path"   > /dev/null || \
+       ! git rev-parse --verify -q "${REF}^1:$path" > /dev/null
+    then
         cat
         exit 0
     fi
-
-    local path="$1"
 
     local current=$(git hash-object -w --stdin)
     local captured=$(git rev-parse "$REF:$path")
@@ -46,43 +48,51 @@ filter_clean() {
         -L local -L ignored -L original \
         "$current" "$captured" "$original"
     local status="$?"
-    set -Ee
 
     if [[ $status -gt 0 ]] ; then
         _print "WARN: Conflicts found in local-ignored files and worktree - manual resolution required"
     fi
+
+    # exit $status
 }
 
 filter_smudge() {
-    if ! git show-ref --verify -q "$REF" ; then
+    local path="$1"
+
+    if ! git rev-parse --verify -q "${REF}"         > /dev/null || \
+       ! git rev-parse --verify -q "${REF}:$path"   > /dev/null || \
+       ! git rev-parse --verify -q "${REF}^1:$path" > /dev/null
+    then
         cat
         exit 0
     fi
 
-    local path="$1"
-
+    local current=$(git hash-object -w --stdin)
     local captured=$(git rev-parse "$REF:$path")
     local original=$(git rev-parse "${REF}^1:$path")
-
-    local current=$(git hash-object -w --stdin)
 
     set +Ee
     git merge-file --object-id -p \
         -L local -L ignored -L original \
         "$captured" "$original" "$current"
     local status="$?"
-    set -Ee
 
     if [[ $status -gt 0 ]] ; then
         _print "WARN: local-ignored files conflict with worktree changes; the smudge filter generated conflicting content - manual resolution required"
     fi
+
+    # exit $status
 }
 
 _push() {
-    local captured=$(git stash create "local-ignored captured on $(git rev-parse --abbrev-ref HEAD)")
+    local captured=$(git stash create "local-ignored captured")
 
     git update-ref --create-reflog "$REF" "$captured"
     echo $captured
+}
+
+_show() {
+    git stash show "$REF"
 }
 
 _reset() {
@@ -101,11 +111,9 @@ list_files() {
         exit 0
     fi
 
+    # _print "Info: You need to set the 'filter' configs on gitattributes(5) for ignoreing these files."
+
     git diff --name-only "$REF"^- "$@"
-
-    _print
-    _print "Info: you need to set 'filter' on gitattributes(5) for ignoreing these files."
-
 }
 
 _diff() {
@@ -136,8 +144,11 @@ main() {
         ls)
             list_files "$@"
             ;;
-        diff)
-            _diff "$@"
+        # diff)
+        #     _diff "$@"
+        #     ;;
+        show)
+            _show "$@"
             ;;
         filter-clean)
             # specify '%f' in git config
