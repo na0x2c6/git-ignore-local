@@ -2,16 +2,16 @@
 
 set -Eeuo pipefail
 
-DEFAULT_BACKUP_DIR="$(git rev-parse --git-common-dir)/_ignore-local"
-BACKUP_DIR="${GIT_IGNORE_LOCAL_DIR:-$DEFAULT_BACKUP_DIR}"
+DEFAULT_REF="refs/_local-ignored"
+REF="${GIT_IGNORE_REF:-$DEFAULT_REF}"
 
 usage() {
     cat <<EOF
 Usage: git-ignore-local <command> [args]
 
 Commands:
-    add <file>          Add a file to the local ignore list
-    forget <file>       Remove a file from the local ignore list
+    push           Capture current state to ignore
+    reset       Delete captured state to ignore
     ls                  List files in the local ignore list
     diff [<opt>] [--] [<local-ignored files>...]
                         Show diff between original and worktree files
@@ -20,8 +20,8 @@ Commands:
     help                Show this help message
 
 Environment variables:
-    GIT_IGNORE_LOCAL_DIR    Directory for storing backup files
-                           (default: $(git rev-parse --git-common-dir)/_ignore-local)
+    GIT_IGNORE_REF      ref for storing backup files
+                           (default: $DEFAULT_REF)
 EOF
 }
 
@@ -30,17 +30,21 @@ _print() {
 }
 
 filter_clean() {
-    local prefix="$BACKUP_DIR/$1"
-
-    if [[ ! -e "${prefix}.me" ]] || [[ ! -e "${prefix}.orig" ]] ; then
+    if ! git show-ref --verify -q "$REF" ; then
         cat
         exit 0
     fi
 
-    cat > "${prefix}.tmp"
+    local path="$1"
+
+    local current=$(git hash-object -w --stdin)
+    local captured=$(git rev-parse "$REF:$path")
+    local original=$(git rev-parse "${REF}^1:$path")
 
     set +Ee
-    git merge-file -p -L local -L ignored -L original "${prefix}".{tmp,me,orig}
+    git merge-file --object-id -p \
+        -L local -L ignored -L original \
+        "$current" "$captured" "$original"
     local status="$?"
     set -Ee
 
@@ -50,18 +54,22 @@ filter_clean() {
 }
 
 filter_smudge() {
-    local prefix="$BACKUP_DIR/$1"
-
-    if [[ ! -e "${prefix}.me" ]] || [[ ! -e "${prefix}.orig" ]] ; then
+    if ! git show-ref --verify -q "$REF" ; then
         cat
         exit 0
     fi
 
-    cat > "${prefix}.tmp"
+    local path="$1"
 
+    local captured=$(git rev-parse "$REF:$path")
+    local original=$(git rev-parse "${REF}^1:$path")
+
+    local current=$(git hash-object -w --stdin)
 
     set +Ee
-    git merge-file -p -L ignored -L original -L local "${prefix}".{me,orig,tmp}
+    git merge-file --object-id -p \
+        -L local -L ignored -L original \
+        "$captured" "$original" "$current"
     local status="$?"
     set -Ee
 
@@ -70,72 +78,43 @@ filter_smudge() {
     fi
 }
 
-add_file() {
-    local file="$1"
-    set -x
+_push() {
+    local captured=$(git stash create "local-ignored captured on $(git rev-parse --abbrev-ref HEAD)")
 
-    mkdir -p "$(dirname "$BACKUP_DIR/$file")"
-
-    # write original file from index
-    git cat-file -p ":$file" > "$BACKUP_DIR/$file.orig"
-
-    # write local file
-    cp -f "$file" "$BACKUP_DIR/$file.me"
+    git update-ref --create-reflog "$REF" "$captured"
+    echo $captured
 }
 
-forget_file() {
-    local file="$1"
-    set -x
+_reset() {
+    if ! git show-ref --verify -q "$REF" ; then
+        _print "No files ignored locally"
+    fi
+    local hash=$(git rev-parse "$REF")
+    git update-ref -d "$REF"
 
-    rm -f "$BACKUP_DIR/$file".{orig,me,tmp}
+    _print "Forget captured state: $hash"
 }
 
 list_files() {
-    if [ ! -d "$BACKUP_DIR" ]; then
-        return 0
+    if ! git show-ref --verify -q "$REF" ; then
+        _print "No local-ignored entries."
+        exit 0
     fi
 
-    find "$BACKUP_DIR" -type f \
-        | sed -e "s|^$BACKUP_DIR/||g" -e 's/\(\.orig\|\.me\|\.tmp\)$//' \
-        | uniq
+    git diff --name-only "$REF"^- "$@"
+
+    _print
+    _print "Info: you need to set 'filter' on gitattributes(5) for ignoreing these files."
+
 }
 
-diff_files() {
-    if [ ! -d "$BACKUP_DIR" ]; then
-        return 0
+_diff() {
+    if ! git show-ref --verify -q "$REF" ; then
+        _print "No local-ignored entries."
+        exit 0
     fi
 
-    local diff_flags=()
-    local files=()
-    while [[ $# -gt 0 ]] ; do
-        case "$1" in
-            --)
-                shift
-                files+=("$@")
-                break;
-                ;;
-            -*)
-                diff_flags+=("$1")
-                shift
-                ;;
-            *)
-                files+=("$1")
-                shift
-                ;;
-        esac
-    done
-
-    if [[ ${#files[@]} -eq 0 ]] ; then
-        read -r -a files <<< "$(list_files)"
-    fi
-
-    for f in ${files[@]} ; do
-        local orig="${BACKUP_DIR}/${f}.orig"
-        if [[ ! -e $orig ]] ; then
-            continue
-        fi
-        git diff --no-index "${diff_flags[@]}" -- "$orig" "$f"
-    done
+    git diff "$REF" "$@"
 }
 
 main() {
@@ -148,25 +127,17 @@ main() {
     shift
 
     case "$command" in
-        add)
-            if [ $# -ne 1 ]; then
-                echo "Error: 'add' requires exactly one file argument" >&2
-                exit 1
-            fi
-            add_file "$1"
+        push)
+            _push "$@"
             ;;
-        forget)
-            if [ $# -ne 1 ]; then
-                echo "Error: 'forget' requires exactly one file argument" >&2
-                exit 1
-            fi
-            forget_file "$1"
+        reset)
+            _reset "$@"
             ;;
         ls)
-            list_files
+            list_files "$@"
             ;;
         diff)
-            diff_files "$@"
+            _diff "$@"
             ;;
         filter-clean)
             # specify '%f' in git config
