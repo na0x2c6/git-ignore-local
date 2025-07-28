@@ -1,0 +1,379 @@
+#!/bin/bash
+
+set -Eeuo pipefail
+
+DISABLED=${GIT_WINK_DISABLED:-0}
+
+WINK_HAED="refs/wink"
+
+DEFAULT_REF_PREFIX="refs/winks"
+REF_PREFIX="${GIT_WINK_REF_PREFIX:-${DEFAULT_REF_PREFIX}}"
+
+DEFAULT_FILTER=wink
+FILTER_NAME=${GIT_WINK_FILTER:-${DEFAULT_FILTER}}
+
+WINK_ATTR_LINE_START="##### GIT_WINK_FILTER START ######"
+WINK_ATTR_LINE_END="##### GIT_WINK_FILTER END ######"
+
+NAME=wink
+
+_usage() {
+    cat <<EOF
+Usage: git-${NAME} <command> [args]
+
+Commands:
+    add --all|<file> [<file>...] Add files to local ignore list
+    reset [<file>...]            Delete files from local ignore list
+    ls-files                     List files in the local ignore list
+    list                         Show wink reflog
+    glance <git command>         Temporary disable wink filter and exec git commands
+    diff                         Alias to \`git wink diff\`
+    setup-config                 Setup gitconfig for using git-wink filter
+    filter-clean                 Filter for staging (used in gitconfig)
+    filter-smudge                Filter for checkout (used in gitconfig)
+    help                         Show this help message
+EOF
+}
+
+__print() {
+    echo "$@" >&2
+}
+
+_raw-git() {
+    local disabled="${GIT_WINK_DISABLED:-}"
+
+    export GIT_WINK_DISABLED=1
+
+    # workaround to let git detect attributes updating
+    _ls-files | while read -r f ; do touch "$f" ; done
+
+    git "$@"
+
+    if [[ -z $disabled ]] ; then
+        unset GIT_WINK_DISABLED
+    else
+        export GIT_WINK_DISABLED="$disabled"
+    fi
+
+    # workaround to let git detect attributes updating
+    _ls-files | while read -r f ; do touch "$f" ; done
+}
+
+_filter_clean() {
+    if [[ $DISABLED = "1" ]] ; then
+        cat
+        exit 0
+    fi
+
+    local path="$1"
+    local wink_ref=$(__wink_ref "$path")
+
+    if ! git rev-parse --verify -q "${wink_ref}"         > /dev/null || \
+       ! git rev-parse --verify -q "${wink_ref}:$path"   > /dev/null || \
+       ! git rev-parse --verify -q "${wink_ref}^2:$path" > /dev/null
+    then
+        cat
+        exit 0
+    fi
+
+    local current=$(git hash-object -w --stdin)
+    local captured=$(git rev-parse "${wink_ref}:$path")
+    local original=$(git rev-parse "${wink_ref}^2:$path")
+
+    set +Ee
+    git merge-file --object-id -p \
+        -L local -L ignored -L original \
+        "$current" "$captured" "$original"
+    local status="$?"
+
+    if [[ $status -gt 0 ]] ; then
+        __print "ERROR: Conflicts found in winked files and index - manual resolution required"
+    fi
+
+    exit $status
+}
+
+_filter_smudge() {
+    if [[ $DISABLED = "1" ]] ; then
+        cat
+        exit 0
+    fi
+
+    local path="$1"
+    local wink_ref=$(__wink_ref "$path")
+
+    if ! git rev-parse --verify -q "${wink_ref}"         > /dev/null || \
+       ! git rev-parse --verify -q "${wink_ref}:$path"   > /dev/null || \
+       ! git rev-parse --verify -q "${wink_ref}^2:$path" > /dev/null
+    then
+        cat
+        exit 0
+    fi
+
+    local current=$(git hash-object -w --stdin)
+    local captured=$(git rev-parse "${wink_ref}:$path")
+    local original=$(git rev-parse "${wink_ref}^2:$path")
+
+    set +Ee
+    git merge-file --object-id -p \
+        -L local -L original -L ignored \
+        "$current" "$original" "$captured"
+    local status="$?"
+
+    if [[ $status -gt 0 ]] ; then
+        __print "ERROR: Conflicts found in winked files and worktree - manual resolution required"
+    fi
+
+    exit $status
+}
+
+_add() {
+    local files=()
+    while [[ $# -gt 0 ]] ; do
+        case "$1" in
+            --)
+                shift
+                local files_with_diff=()
+                while read -r f ; do files+=("$f") ; done < <(_raw-git diff --name-only -- "$@")
+                break;
+                ;;
+            --all)
+                while read -r f ; do files+=("$f") ; done < <(_raw-git diff --name-only)
+                break;
+                ;;
+            -*)
+                __print "ERROR: \`$1\`: is unknown option"
+                exit 1
+                ;;
+            *)
+                if _raw-git diff --quiet "$1" ; then
+                    __print "INFO: \`$1\` has no diff, so skipped"
+                else
+                    files+=("$1")
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    __set-attr "${files[@]}"
+
+    local captured=$(_raw-git stash create "Winked ${files[@]}")
+    if [[ -z $captured ]] ; then
+        __print "Creating stash object is failed"
+        exit 1
+    fi
+
+    for f in "${files[@]}" ; do
+        local ref=$(__wink_ref "$f")
+        printf -- 'update "%s" %s\n' "$ref" "$captured"
+    done | \
+        git update-ref --stdin --create-reflog
+
+    git update-ref --create-reflog "$WINK_HAED" "$captured"
+}
+
+_reset() {
+    local files=()
+    while [[ $# -gt 0 ]] ; do
+        case "$1" in
+            --)
+                shift
+                files+=("$@")
+                break;
+                ;;
+            -*)
+                __print "ERROR: \`$1\`: is unknown option"
+                exit 1
+                ;;
+            *)
+                files+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    if [[ ${#files[@]} -eq 0 ]] ; then
+        while read -r f ; do files+=("$f") ; done < <(_ls-files)
+    fi
+
+    # remove ref
+    for f in ${files[@]} ; do
+        local ref=$(__wink_ref "$f")
+        printf -- 'delete "%s"\n' "$ref"
+    done | \
+        git update-ref --stdin
+
+    __unset-attr "${files[@]}"
+
+    # workaround to let git detect attributes updating
+    touch "${files[@]}"
+}
+
+_ls-files() {
+    git for-each-ref "${REF_PREFIX}" --format="%(refname)" | sed -E -e "s|${REF_PREFIX}/?||"
+}
+
+_diff() {
+    _raw-git diff "$@"
+}
+
+_list() {
+    git reflog --format=reference "$WINK_HAED"
+}
+
+_setup-config() {
+    git config filter.${FILTER_NAME}.clean "git-wink filter-clean '%f'"
+    git config filter.${FILTER_NAME}.smudge "git-wink filter-smudge '%f'"
+}
+
+__get_attributes() {
+    echo "$(git rev-parse --git-common-dir)/info/attributes"
+}
+
+__wink_ref() {
+    local file="$1"
+
+    echo "${REF_PREFIX}/$file"
+}
+
+__has_wink_filter() {
+    local file="$1"
+
+    local ca=$(git check-attr filter "$file")
+    local pattern_prefix=':[[:space:]]?filter:[[:space:]]*'
+
+    if [[ $ca =~ ${pattern_prefix}${FILTER_NAME}$ ]] ; then
+        # already set
+        return 0
+    fi
+
+    return 1
+}
+
+__is_filter_unspecified() {
+    local file="$1"
+
+    local ca=$(git check-attr filter "$file")
+    local pattern_prefix=':[[:space:]]?filter:[[:space:]]*'
+
+    if [[ "$ca" =~ ${pattern_prefix}unspecified$ ]] ; then
+        return 0
+    fi
+
+    return 1
+}
+
+__set-attr() {
+    # validation
+    for file in $@ ; do
+        if [[ ! -f "$file" ]] ; then
+            __print "Not found: $file"
+            return 1
+        fi
+
+        if __has_wink_filter "$file" ; then
+            continue
+        fi
+
+        if ! __is_filter_unspecified "$file" ; then
+            __print "${file}: Another filter is set, so cannot set wink filter"
+            return 1
+        fi
+    done
+
+    attr=$(__get_attributes)
+    if [[ ! -f $attr ]] ; then
+        touch "$attr"
+    fi
+
+    if ! grep -q "$WINK_ATTR_LINE_START" "$attr" ; then
+        printf -- "\n$WINK_ATTR_LINE_START\n" >> "$attr"
+    fi
+
+    if ! grep -q "$WINK_ATTR_LINE_END" "$attr" ; then
+        sed -i "/$WINK_ATTR_LINE_START/a $WINK_ATTR_LINE_END" "$attr"
+    fi
+
+    for file in $@ ; do
+        local file_path="/$(git ls-files --full-name "$file")"
+        sed -i "/$WINK_ATTR_LINE_END/i \"$file_path\" filter=${FILTER_NAME}" "$attr"
+    done
+}
+
+__unset-attr() {
+    attr=$(__get_attributes)
+
+    if [[ ! -f $attr ]] ; then
+        return 0
+    fi
+
+    # remove from gitattributes
+    for file in $@ ; do
+        local file_path="/$(git ls-files --full-name "$file")"
+        local attr_pattern="\"$file_path\"[[:space:]]+filter=${FILTER_NAME}[[:space:]]*$"
+        sed -i -E "/^${WINK_ATTR_LINE_START}$/,/^${WINK_ATTR_LINE_END}$/ \
+            {/${attr_pattern//\//\\\/}/d}" \
+            "$attr"
+
+        if __has_wink_filter "$file" ; then
+            __print "WARN: You need to remove ${FILTER_NAME} filter manually for \`$file\`"
+        fi
+    done
+}
+
+main() {
+    if [ $# -eq 0 ]; then
+        _usage
+        exit 1
+    fi
+
+    local command="$1"
+    shift
+
+    case "$command" in
+        add)
+            if [ $# -eq 0 ]; then
+                __print "Error: 'add' requires at least one argument"
+                exit 1
+            fi
+            _add "$@"
+            ;;
+        reset)
+            _reset "$@"
+            ;;
+        ls-files)
+            _ls-files "$@"
+            ;;
+        list)
+            _list "$@"
+            ;;
+        diff)
+            _diff "$@"
+            ;;
+        glance)
+            _raw-git "$@"
+            ;;
+        setup-config)
+            _setup-config "$@"
+            ;;
+        filter-clean)
+            # specify '%f' in git config
+            _filter_clean "$@"
+            ;;
+        filter-smudge)
+            # specify '%f' in git config
+            _filter_smudge "$@"
+            ;;
+        help|-h|--help)
+            _usage
+            ;;
+        *)
+            echo "Error: Unknown command '$command'" >&2
+            _usage
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
