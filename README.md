@@ -2,6 +2,15 @@
 
 git-wink is a script that abuses git-filter to exclude arbitrary diffs of tracked files from staging
 
+## Motivation
+
+When searching for information about "ignoring differences in files tracked by git," you often come across examples using `git update-index --skip-worktree` or `--assume-unchanged`. Both of these are performance-oriented flags [^sw] [^au] and are not features intended for "ignoring differences."
+
+However, a feature specifically for "ignoring differences" (rather than files) does not currently exist in git itself, and since I could not find any tools for this purpose, I created this script.
+
+[^sw]: https://git-scm.com/docs/git-update-index#_skip_worktree_bit 
+[^au]: https://git-scm.com/docs/git-update-index#_using_assume_unchanged_bit
+
 ## Important Notice
 
 - The author does not use this script in production; it was written as a proof of concept to demonstrate "ignoring specific diffs of arbitrary files." Instead of relying on this approach, always consider submitting proper change requests to the project. For example, you might propose environment-variable-based configurations to handle developer-specific environment differences.
